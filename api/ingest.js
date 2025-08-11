@@ -1,4 +1,4 @@
-// api/ingest.js — upload text în Qdrant (acceptă API Key sau JWT). Protejat cu ADMIN_TOKEN.
+// api/ingest.js — upload în Qdrant (suportă API Key sau JWT "Bearer"). Protejat cu ADMIN_TOKEN.
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const QDRANT_URL = process.env.QDRANT_URL;
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY;
@@ -9,10 +9,10 @@ const COL_MAIN  = process.env.QDRANT_COLLECTION_MAINSTREAM || 'paul_mainstream';
 function send(res, code, obj){ res.status(code).setHeader('Content-Type','application/json'); res.end(JSON.stringify(obj)); }
 function cors(res){ res.setHeader('Access-Control-Allow-Origin','*'); res.setHeader('Access-Control-Allow-Methods','POST, OPTIONS'); res.setHeader('Access-Control-Allow-Headers','Content-Type,x-admin-token'); }
 
-function qdrantHeaders() {
-  const h = { 'Content-Type': 'application/json' };
-  if (QDRANT_API_KEY?.startsWith('eyJ')) h['Authorization'] = `Bearer ${QDRANT_API_KEY}`; // JWT
-  else if (QDRANT_API_KEY) h['api-key'] = QDRANT_API_KEY; // API key
+function qdrantHeaders(){
+  const h = { 'Content-Type':'application/json' };
+  if (QDRANT_API_KEY?.startsWith('eyJ')) h.Authorization = `Bearer ${QDRANT_API_KEY}`; // JWT token
+  else if (QDRANT_API_KEY) h['api-key'] = QDRANT_API_KEY; // API key clasic
   return h;
 }
 
@@ -22,8 +22,7 @@ async function embed(text){
     headers:{ 'Authorization':`Bearer ${OPENAI_API_KEY}`, 'Content-Type':'application/json' },
     body: JSON.stringify({ model:'text-embedding-3-small', input:text })
   });
-  if(!r.ok) throw new Error('embed failed');
-  const j=await r.json(); return j.data[0].embedding;
+  if(!r.ok) throw new Error('embed failed'); const j=await r.json(); return j.data[0].embedding;
 }
 async function ensureCollection(name){
   await fetch(`${QDRANT_URL}/collections/${name}`, {
@@ -64,10 +63,9 @@ module.exports = async (req, res) => {
     points.push({ id: Date.now()+i, vector:v, payload:{ title, section, lang, text: parts[i] }});
   }
   const r = await fetch(`${QDRANT_URL}/collections/${collection}/points?wait=true`, {
-    method:'PUT',
-    headers: qdrantHeaders(),
-    body: JSON.stringify({ points })
+    method:'PUT', headers: qdrantHeaders(), body: JSON.stringify({ points })
   });
-  if(!r.ok){ const t = await r.text(); return send(res,500,{error:'Qdrant upsert failed', detail:t}); }
+  if(!r.ok){ const t=await r.text(); return send(res,500,{error:'Qdrant upsert failed', detail:t}); }
+
   return send(res,200,{ ok:true, added: points.length, collection });
 };
