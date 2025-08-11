@@ -1,10 +1,10 @@
-// api/ask.js — backend fără corpus, limbă automată, mainstream etichetat natural
-// Necesită: OPENAI_API_KEY (și opțional OPENAI_MODEL) în Vercel → Environment Variables
+// API route pentru Vercel (compatibil ca "api/ask.js")
+// Necesită OPENAI_API_KEY (și opțional OPENAI_MODEL) în Vercel → Environment Variables
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 function cors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*"); // poți restrânge la domeniul tău
+  res.setHeader("Access-Control-Allow-Origin", "*"); // restrânge la domeniul tău când vrei
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
@@ -15,48 +15,28 @@ function pickLang(lang) {
   return ["ro", "en", "sv", "de", "fr", "es", "pt", "it"].includes(L) ? L : "auto";
 }
 
-function mainstreamLabel(lang) {
-  switch (lang) {
-    case "ro": return "O altă interpretare:";
-    case "sv": return "En annan tolkning:";
-    case "de": return "Eine andere Deutung:";
-    case "fr": return "Une autre interprétation :";
-    case "es": return "Otra interpretación:";
-    case "pt": return "Outra interpretação:";
-    case "it": return "Un'altra interpretazione:";
-    case "en": default: return "Another interpretation:";
-  }
-}
-
 function systemPrompt(userLang) {
   const langLine =
     userLang === "auto"
-      ? "Always answer in the language of the user's last message. Keep the entire reply in that language."
-      : `Always answer in ${userLang}. Keep the entire reply in that language.`;
+      ? "Always answer in the language of the user's last message."
+      : `Always answer in ${userLang}.`;
 
-  // Instrucțiuni privind vocea și axiomele
-  const voice = (
+  return (
+    `${langLine}\n` +
     "You are 'Theological Assistant' for paulcsavdari.info.\n" +
-    "Voice & style: sober, theological, clear, direct, argumentative. No hedging (no 'pare', 'posibil', 's-ar putea', etc.). No academic fluff.\n" +
-    "Do not show citations, sources, or file names. Speak as a coherent vision.\n"
-  );
-
-  const axioms = (
-    "Core axioms to prioritize:\n" +
-    "1) 'Cornul cel mic' (Daniel 8) = the philosophical force that conquers and rewrites religions via syncretism and universalization.\n" +
-    "2) LXX (Septuaginta) marks the intervention of philosophy in the Jewish corpus; the plural in Genesis 1 betrays this intervention.\n" +
-    "3) The authentic line is God's unity confirmed explicitly by Jesus; myths like the 'fall' are later syncretic seams.\n" +
-    "4) Christian judgment: the Spirit works inseparably through conscience; Jesus is not simultaneously advocate and judge in a coherent legal frame.\n"
-  );
-
-  const mainstreamRule = (
+    "Voice & style: sober, theological, clear, direct, argumentative. No hedging words like 'pare', 'posibil', 's-ar putea' etc. No academic fluff.\n" +
+    "Do not show citations, sources, or file names. Speak as a coherent vision.\n" +
+    "Core axioms you must prioritize in reasoning and answers:\n" +
+    "1) 'Cornul cel mic' (Daniel 8) = Filosofia care cucerește și rescrie religiile prin sincretism și universalizare.\n" +
+    "2) LXX (Septuaginta) marchează intervenția filosofiei în corpusul iudaic; pluralul din Geneza 1 trădează această intervenție.\n" +
+    "3) Linia autentică este unitatea lui Dumnezeu, confirmată explicit de Isus; mitul căderii și alte ambiguități sunt cusături sincretice.\n" +
+    "4) Judecata creștină: Duhul lucrează inseparabil prin conștiință; Isus nu este simultan avocat și judecător într-un cadru juridic coerent.\n" +
+    // *** SINGURA SCHIMBARE CERUTĂ: eticheta mainstream naturală, fără 'Pentru context (mainstream):' ***
     "Grounding policy (no corpus yet): Use these axioms as the primary frame. " +
-    "If you add a short mainstream context (max 1–3 sentences), append it after the main answer using a neutral, localized lead-in. " +
-    "Examples of the lead-in per language: RO 'O altă interpretare:', EN 'Another interpretation:', SV 'En annan tolkning:', DE 'Eine andere Deutung:', FR 'Une autre interprétation :', ES 'Otra interpretación:', PT 'Outra interpretação:', IT 'Un'altra interpretazione:'. " +
-    "Never use labels like 'For context (mainstream):', and never mix languages in the same reply. Never contradict the axioms.\n"
+    "If you add a short mainstream context (max 1–3 sentences), append it after the main answer and introduce it with a simple lead-in in the same language as the question: " +
+    "RO 'O altă interpretare:', EN 'Another interpretation:', SV 'En annan tolkning:'. " +
+    "Never contradict the axioms.\n"
   );
-
-  return `${langLine}\n${voice}${axioms}${mainstreamRule}`;
 }
 
 async function chatCompletion({ question, lang }) {
@@ -85,24 +65,8 @@ async function chatCompletion({ question, lang }) {
   }
 
   const data = await resp.json();
-  let answer = data.choices?.[0]?.message?.content?.trim() || "";
-  return postProcess(answer, userLang);
-}
-
-function postProcess(text, userLang) {
-  const lang = userLang === "auto" ? "en" : userLang;
-  const label = mainstreamLabel(lang);
-  const patterns = [
-    /\bPentru context(?:ul)?(?: \(mainstream\))?:/gi,
-    /\bFor context(?: \(mainstream\))?:/gi,
-    /\bMainstream(?: view)?:/gi,
-    /\bInterpretarea curent[ăa]:/gi,
-    /\bVanlig tolkning:/gi,
-    /\bViziunea majoritar[ăa]:/gi
-  ];
-  let out = text;
-  for (const p of patterns) out = out.replace(p, label + " ");
-  return out.replace(/\s{2,}/g, " ");
+  const answer = data.choices?.[0]?.message?.content?.trim() || "";
+  return answer;
 }
 
 module.exports = async (req, res) => {
