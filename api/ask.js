@@ -1,4 +1,4 @@
-// api/ask.js — RAG + router "sensibil vs. neutru", multilingv
+// api/ask.js — RAG + router "sensibil vs. neutru", multilingv (Qdrant API Key sau JWT)
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const QDRANT_URL = process.env.QDRANT_URL;
@@ -6,7 +6,6 @@ const QDRANT_API_KEY = process.env.QDRANT_API_KEY;
 const COL_CANON = process.env.QDRANT_COLLECTION_CANON || 'paul_canon';
 const COL_MAIN  = process.env.QDRANT_COLLECTION_MAINSTREAM || 'paul_mainstream';
 
-// Subiecte sensibile (RO/EN) — putem adăuga oricând
 const SENSITIVE = [
   'cornul cel mic','daniel 8','2300 seri','2300 seri și dimineți','curățirea sanctuarului',
   'septuaginta','lxx','antioh','antioh epifanes','filosofia greacă','rămășița','1260','vremea sfârșitului',
@@ -17,6 +16,14 @@ const SENSITIVE = [
 function send(res, code, obj){ res.status(code).setHeader('Content-Type','application/json'); res.end(JSON.stringify(obj)); }
 function cors(res){ res.setHeader('Access-Control-Allow-Origin','*'); res.setHeader('Access-Control-Allow-Methods','POST, OPTIONS'); res.setHeader('Access-Control-Allow-Headers','Content-Type'); }
 function isSensitive(q){ const s=(q||'').toLowerCase(); return SENSITIVE.some(k=>s.includes(k.toLowerCase())); }
+
+// ——— Qdrant headers: acceptă fie API Key, fie JWT (Bearer)
+function qdrantHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (QDRANT_API_KEY?.startsWith('eyJ')) h['Authorization'] = `Bearer ${QDRANT_API_KEY}`; // JWT
+  else if (QDRANT_API_KEY) h['api-key'] = QDRANT_API_KEY; // API key clasic
+  return h;
+}
 
 async function embed(text){
   const r = await fetch('https://api.openai.com/v1/embeddings', {
@@ -40,7 +47,7 @@ async function qsearch(collection, vector, topK=6, threshold=0.76){
   try{
     const r = await fetch(`${QDRANT_URL}/collections/${collection}/points/search`, {
       method:'POST',
-      headers:{ 'Content-Type':'application/json', 'api-key':QDRANT_API_KEY },
+      headers: qdrantHeaders(),
       body: JSON.stringify({ vector, limit: topK, with_payload:true, score_threshold: threshold })
     });
     if(!r.ok) return [];
