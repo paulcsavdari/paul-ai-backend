@@ -1,4 +1,4 @@
-// api/ingest.js — upload text în Qdrant (protejat cu ADMIN_TOKEN)
+// api/ingest.js — upload text în Qdrant (acceptă API Key sau JWT). Protejat cu ADMIN_TOKEN.
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const QDRANT_URL = process.env.QDRANT_URL;
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY;
@@ -8,6 +8,13 @@ const COL_MAIN  = process.env.QDRANT_COLLECTION_MAINSTREAM || 'paul_mainstream';
 
 function send(res, code, obj){ res.status(code).setHeader('Content-Type','application/json'); res.end(JSON.stringify(obj)); }
 function cors(res){ res.setHeader('Access-Control-Allow-Origin','*'); res.setHeader('Access-Control-Allow-Methods','POST, OPTIONS'); res.setHeader('Access-Control-Allow-Headers','Content-Type,x-admin-token'); }
+
+function qdrantHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (QDRANT_API_KEY?.startsWith('eyJ')) h['Authorization'] = `Bearer ${QDRANT_API_KEY}`; // JWT
+  else if (QDRANT_API_KEY) h['api-key'] = QDRANT_API_KEY; // API key
+  return h;
+}
 
 async function embed(text){
   const r = await fetch('https://api.openai.com/v1/embeddings', {
@@ -21,7 +28,7 @@ async function embed(text){
 async function ensureCollection(name){
   await fetch(`${QDRANT_URL}/collections/${name}`, {
     method:'PUT',
-    headers:{ 'Content-Type':'application/json','api-key':QDRANT_API_KEY },
+    headers: qdrantHeaders(),
     body: JSON.stringify({ vectors:{ size:1536, distance:'Cosine' } })
   }); // idempotent
 }
@@ -57,7 +64,8 @@ module.exports = async (req, res) => {
     points.push({ id: Date.now()+i, vector:v, payload:{ title, section, lang, text: parts[i] }});
   }
   const r = await fetch(`${QDRANT_URL}/collections/${collection}/points?wait=true`, {
-    method:'PUT', headers:{ 'Content-Type':'application/json','api-key':QDRANT_API_KEY },
+    method:'PUT',
+    headers: qdrantHeaders(),
     body: JSON.stringify({ points })
   });
   if(!r.ok){ const t = await r.text(); return send(res,500,{error:'Qdrant upsert failed', detail:t}); }
