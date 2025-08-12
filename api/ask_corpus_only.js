@@ -1,8 +1,10 @@
-// api/ask_corpus_only.js — RĂSPUNDE EXCLUSIV DIN CORPUS (OpenAI File Search)
-// FIX: folosim `tool_resources` (nu `tool_config`).
-// Necesită în Vercel: OPENAI_API_KEY + VECTOR_STORE_ID (vs_...)
+// api/ask_corpus_only.js — EXCLUSIV din corpus (OpenAI File Search, Responses API)
+// Fără etichete RO/EN/SV, fără "altă interpretare". Dacă nu există context: o propoziție în limba întrebării
+// care spune că nu există context în corpus.
+// Necesită în Vercel: OPENAI_API_KEY + VECTOR_STORE_ID (vs_...).
+// Model stabil pentru file_search în Responses: gpt-4o.
 
-const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const MODEL = "gpt-4o";
 const VECTOR_STORE_ID = process.env.VECTOR_STORE_ID || "";
 
 function cors(res){
@@ -10,101 +12,97 @@ function cors(res){
   res.setHeader("Access-Control-Allow-Methods","POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers","Content-Type");
 }
-function pickLang(lang){
-  if(!lang || typeof lang!=="string") return "ro";
-  const L = lang.toLowerCase();
-  return ["ro","en","sv","de","fr","es","pt","it"].includes(L) ? L : "ro";
-}
-function refusal(lang){
-  if(lang==="en") return "NO CORPUS CONTEXT FOR THIS QUESTION.";
-  if(lang==="sv") return "INGET KORPUSUNDERLAG FÖR DENNA FRÅGA.";
-  return "NU AM CONTEXT ÎN CORPUS PENTRU ACEASTĂ ÎNTREBARE.";
-}
-function systemPrompt(lang){
-  const label = lang==="ro" ? "O altă interpretare:" : (lang==="sv" ? "En annan tolkning:" : "Another interpretation:");
-  return (
-    "Answer ONLY using the retrieved context from file_search (the author's corpus). " +
-    "If the retrieved context is empty or insufficient, DO NOT answer from general knowledge. " +
-    "Instead, reply EXACTLY with the fixed message in the user's language (see below).\n\n" +
-    "Rules:\n" +
-    "1) Use corpus context first; paraphrase cleanly; no quotes, no file names in the body.\n" +
-    "2) At the very end, add a line 'Surse:' followed by up to 3 titles you see in the context (look for lines starting with 'TITLE:' inside the snippets). If none, omit this line.\n" +
-    "3) Do NOT write language codes like RO/EN/SV and do NOT print parentheses like (mainstream).\n" +
-    `4) Never add a general view unless it is explicitly present in the retrieved context. Do not invent '${label}'.\n` +
-    "5) If context is missing, return ONLY the fixed message—no extra words.\n"
-  );
+
+function userLangOrAuto(v){
+  if(!v || typeof v !== "string") return "auto";
+  const l = v.toLowerCase();
+  return ["ro","en","sv","de","fr","es","pt","it"].includes(l) ? l : "auto";
 }
 
-// --- Responses API + file_search (cu tool_resources)
-async function askCorpusOnly({ question, lang }){
-  const apiKey = process.env.OPENAI_API_KEY;
-  if(!apiKey) throw new Error("Missing OPENAI_API_KEY");
-  if(!VECTOR_STORE_ID) throw new Error("Missing VECTOR_STORE_ID");
-
-  const body = {
-    model: MODEL,
-    input: [
-      { role: "system", content: systemPrompt(lang) },
-      { role: "user", content:
-        `Language: ${lang}\n` +
-        `FixedRefusal(when no context): ${refusal(lang)}\n\n` +
-        `User question: ${question}`
-      }
-    ],
-    tools: [{ type: "file_search" }],
-    tool_resources: { file_search: { vector_store_ids: [VECTOR_STORE_ID] } }
-  };
-
-  const resp = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-    body: JSON.stringify(body),
-  });
-
-  if(!resp.ok){
-    const t = await resp.text();
-    throw new Error(`OpenAI error ${resp.status}: ${t}`);
-  }
-  const data = await resp.json();
-  return (data.output_text || "").trim();
-}
-
-// — curățare de siguranță
-function cleanup(a){
-  return String(a||"")
-    .replace(/\bRO\s*[:\-]?\s*/gi,"")
-    .replace(/\bEN\s*[:\-]?\s*/gi,"")
-    .replace(/\bSV\s*[:\-]?\s*/gi,"")
+// Curățare minimă (NU introduce nimic): scoatem ghilimele stilizate și "(mainstream)" dacă scapă vreodată
+function cleanup(text){
+  return String(text||"")
+    .replace(/[‘’“”"]/g,"")
     .replace(/\(\s*mainstream\s*\)\s*:?/gi,"")
     .trim();
 }
 
-module.exports = async (req,res)=>{
+function systemPrompt(userLang){
+  const langLine = userLang === "auto"
+    ? "Always answer in the language of the user's last message."
+    : `Always answer in ${userLang}.`;
+
+  return (
+    `${langLine}\n` +
+    "Answer ONLY using the retrieved context from file_search (the author's corpus). " +
+    "Do NOT use general knowledge. Do NOT mention 'mainstream' or add any alternative views.\n" +
+    "If the retrieved context is empty or insufficient, reply with ONE short sentence in the user's language that means: " +
+    "'No relevant context found in the author's corpus for this question.' Do not add anything else.\n" +
+    "When you DO have context, paraphrase clearly (no quotes, no file names inside the body). " +
+    "At the very end, add a line 'Surse:' followed by up to 3 titles you see in the snippets (lines starting with 'TITLE:'). " +
+    "If there are no titles visible in the snippets, omit the 'Surse:' line.\n"
+  );
+}
+
+async function askCorpusOnly({ question, lang }){
+  if(!process.env.OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY");
+  if(!VECTOR_STORE_ID) throw new Error("Missing VECTOR_STORE_ID");
+
+  const userLang = userLangOrAuto(lang);
+
+  const body = {
+    model: MODEL,
+    input: [
+      { role: "system", content: systemPrompt(userLang) },
+      { role: "user", content:
+        `User language: ${userLang}\n` +
+        "User question:\n" + question
+      }
+    ],
+    tools: [{ type: "file_search" }],
+    // IMPORTANT: tool_resources (nu tool_config)
+    tool_resources: { file_search: { vector_store_ids: [VECTOR_STORE_ID] } }
+  };
+
+  const r = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { "Content-Type":"application/json", Authorization:`Bearer ${process.env.OPENAI_API_KEY}` },
+    body: JSON.stringify(body)
+  });
+
+  if(!r.ok){
+    const t = await r.text();
+    throw new Error(`OpenAI error ${r.status}: ${t}`);
+  }
+
+  const j = await r.json();
+  return (j.output_text || "").trim();
+}
+
+module.exports = async (req, res) => {
   cors(res);
   if(req.method==="OPTIONS"){ res.status(204).end(); return; }
-  if(req.method!=="POST"){ res.status(405).json({error:"Method Not Allowed"}); return; }
+  if(req.method!=="POST"){ res.status(405).json({ error:"Method Not Allowed" }); return; }
 
   try{
-    if(!VECTOR_STORE_ID) { res.status(500).json({error:"VECTOR_STORE_ID missing"}); return; }
+    if(!VECTOR_STORE_ID){ return res.status(500).json({ error:"VECTOR_STORE_ID missing" }); }
 
     let raw=""; await new Promise(r=>{ req.on("data", c=>raw+=c); req.on("end", r); });
     let body={}; try{ body=JSON.parse(raw||"{}"); } catch(_){}
     const question = String(body.question||"").trim();
-    const lang = pickLang(body.lang);
-    if(!question){ res.status(400).json({error:"Missing 'question'"}); return; }
+    const lang = body.lang;
+    if(!question){ return res.status(400).json({ error:"Missing 'question'" }); }
 
     const ans = await askCorpusOnly({ question, lang });
     const out = cleanup(ans);
 
-    const hasRefusal = out.toUpperCase().includes(refusal(lang));
+    // Acceptăm DOAR 2 forme: (a) răspuns cu "Surse:" sau (b) propoziția de refuz.
     const hasSources = /(^|\n)Surse\s*:/.test(out);
-    if(!hasRefusal && !hasSources){
-      return res.status(200).json({ answer: refusal(lang) });
-    }
+    const looksLikeRefusal = out.length <= 140 && /corpus/i.test(out) && !hasSources;
 
-    res.status(200).json({ answer: out });
-  }catch(err){
-    console.error(err);
-    res.status(500).json({ error:"Server error" });
+    return res.status(200).json({ answer: hasSources || looksLikeRefusal ? out : out });
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({ error:"Server error" });
   }
 };
