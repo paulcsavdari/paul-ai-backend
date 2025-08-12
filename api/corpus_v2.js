@@ -1,7 +1,9 @@
-// api/corpus_v2.js — RĂSPUNDE EXCLUSIV DIN CORPUS folosind Assistants API v2 + File Search
-// Fără RO/EN/SV, fără „mainstream”. Dacă nu există context: o propoziție scurtă în limba întrebării.
-// ENV necesare (Production): OPENAI_API_KEY, VECTOR_STORE_ID (vs_...)
-// Model recomandat: gpt-4o (stabil cu file_search în Assistants v2)
+// api/corpus_v2.js — EXCLUSIV din corpus, Assistants API v2 + File Search
+// • Surse cu link-uri clickabile (HTML): <ul><li><a href="URL">Titlu</a></li></ul>
+// • Fără "RO/EN/SV", fără mainstream. Curățăm artefactele de tip 
+// • Dacă nu există context: o propoziție scurtă în limba întrebării.
+// ENV (Production): OPENAI_API_KEY, VECTOR_STORE_ID (vs_...)
+// Model: gpt-4o (stabil cu file_search în Assistants v2)
 
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 const VECTOR_STORE_ID = process.env.VECTOR_STORE_ID || "";
@@ -21,12 +23,15 @@ function refusal(lang){
   if(lang==="sv") return "Inget relevant underlag i författarens korpus för den här frågan.";
   return "Nu există context relevant în corpusul autorului pentru această întrebare.";
 }
-function cleanup(s){
-  return String(s||"")
-    .replace(/[“”‘’"]/g,"")
-    .replace(/\(\s*mainstream\s*\)\s*:?/gi,"")
+// Curățăm ghilimele stilizate + citările de tip 【...†source】
+function cleanup(html){
+  return String(html||"")
+    .replace(/【[^】]*】/g, "")           // elimină note de tip 
+    .replace(/[“”‘’"]/g, "")            // ghilimele tipografice
     .trim();
 }
+
+// Instrucțiuni: răspuns 250–400 cuvinte când există context + Surse ca HTML <ul><li><a...>
 function instructions(userLang){
   const langLine = userLang==="auto"
     ? "Always answer in the language of the user's last message."
@@ -35,11 +40,16 @@ function instructions(userLang){
     `${langLine}\n` +
     "Answer ONLY using the retrieved context from file_search (the author's corpus). " +
     "Do NOT use general knowledge and do NOT add alternative views. " +
+    "When sufficient context exists, write a clear, structured answer in 2–4 paragraphs (≈250–400 words). " +
+    "Summarize the author's line of argument and key reasons.\n" +
     "If no context is retrieved, reply with ONE short sentence in the user's language meaning: " +
-    "'No relevant context in the author's corpus for this question.' " +
-    "When context exists, paraphrase clearly (no quotes, no file names). " +
-    "At the very end, add a line 'Surse:' followed by up to 3 titles visible in the snippets (lines starting with 'TITLE:'). " +
-    "If there are no titles, omit the 'Surse:' line."
+    "'No relevant context in the author's corpus for this question.'\n" +
+    "At the very end, output a 'Surse:' section as HTML with clickable links, by extracting TITLE: and URL: from the snippets. " +
+    "Exact format:\n" +
+    "Surse:\n<ul>\n<li><a href='URL1' target='_blank' rel='noopener'>TITLE 1</a></li>\n" +
+    "<li><a href='URL2' target='_blank' rel='noopener'>TITLE 2</a></li>\n" +
+    "<li><a href='URL3' target='_blank' rel='noopener'>TITLE 3</a></li>\n</ul>\n" +
+    "If there are no titles/URLs visible, omit the 'Surse:' section entirely.\n"
   );
 }
 
@@ -50,7 +60,7 @@ async function askCorpus({ question, lang }){
   const headers = {
     "Content-Type": "application/json",
     "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-    "OpenAI-Beta": "assistants=v2" // ← obligatoriu pentru Assistants v2
+    "OpenAI-Beta": "assistants=v2"
   };
   const userLang = pickLang(lang);
 
