@@ -1,7 +1,7 @@
-// api/corpus_assist.js — EXCLUSIV din corpus folosind Assistants API + File Search (vector store)
+// api/corpus_assist.js — EXCLUSIV din corpus, Assistants API + File Search (vector store)
 // Fără RO/EN/SV, fără mainstream. Dacă nu există context: o propoziție scurtă în limba întrebării.
-// ENV necesare în Vercel (Production): OPENAI_API_KEY, VECTOR_STORE_ID (vs_...)
-// Model: gpt-4o (stabil cu file_search în Assistants)
+// ENV în Vercel (Production): OPENAI_API_KEY, VECTOR_STORE_ID (vs_...)
+// Model: gpt-4o (stabil pentru file_search în Assistants v2)
 
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 const VECTOR_STORE_ID = process.env.VECTOR_STORE_ID || "";
@@ -11,7 +11,6 @@ function cors(res){
   res.setHeader("Access-Control-Allow-Methods","POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers","Content-Type");
 }
-
 function pickLang(v){
   if(!v || typeof v!=="string") return "auto";
   const l=v.toLowerCase();
@@ -28,7 +27,6 @@ function cleanup(s){
     .replace(/\(\s*mainstream\s*\)\s*:?/gi,"")
     .trim();
 }
-
 function buildInstructions(userLang){
   const langLine = userLang==="auto"
     ? "Always answer in the language of the user's last message."
@@ -51,12 +49,12 @@ async function askWithAssistants({ question, lang }){
 
   const headers = {
     "Content-Type": "application/json",
-    "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+    "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+    "OpenAI-Beta": "assistants=v2" // ← OBLIGATORIU pentru Assistants API v2
   };
-
   const userLang = pickLang(lang);
 
-  // 1) Creăm un Assistant cu file_search și vector store atașat (tool_resources)
+  // 1) Assistant efemer cu file_search + vector store atașat
   const aRes = await fetch("https://api.openai.com/v1/assistants", {
     method: "POST",
     headers,
@@ -69,69 +67,51 @@ async function askWithAssistants({ question, lang }){
       temperature: 0.2
     })
   });
-  if(!aRes.ok){
-    throw new Error(`Assistant create error ${aRes.status}: ${await aRes.text()}`);
-  }
+  if(!aRes.ok) throw new Error(`Assistant create error ${aRes.status}: ${await aRes.text()}`);
   const assistant = await aRes.json();
 
-  // 2) Creăm un Thread și adăugăm mesajul utilizatorului.
-  //    (opțional am putea atașa și aici vector_store, dar e suficient pe assistant)
+  // 2) Thread cu mesajul utilizatorului
   const tRes = await fetch("https://api.openai.com/v1/threads", {
     method: "POST",
     headers,
-    body: JSON.stringify({
-      messages: [{ role: "user", content: question }]
-    })
+    body: JSON.stringify({ messages: [{ role: "user", content: question }] })
   });
-  if(!tRes.ok){
-    throw new Error(`Thread create error ${tRes.status}: ${await tRes.text()}`);
-  }
+  if(!tRes.ok) throw new Error(`Thread create error ${tRes.status}: ${await tRes.text()}`);
   const thread = await tRes.json();
 
-  // 3) Pornim un Run
+  // 3) Run
   const rRes = await fetch(`https://api.openai.com/v1/threads/${thread.id}/runs`, {
     method: "POST",
     headers,
     body: JSON.stringify({ assistant_id: assistant.id })
   });
-  if(!rRes.ok){
-    throw new Error(`Run create error ${rRes.status}: ${await rRes.text()}`);
-  }
+  if(!rRes.ok) throw new Error(`Run create error ${rRes.status}: ${await rRes.text()}`);
   const run = await rRes.json();
 
   // 4) Poll până se termină (max ~60s)
-  let status = run.status;
-  let tries = 0;
+  let status = run.status, tries = 0;
   while(status==="queued" || status==="in_progress" || status==="requires_action"){
-    await new Promise(r=>setTimeout(r, 1500));
+    await new Promise(r=>setTimeout(r,1500));
     const poll = await fetch(`https://api.openai.com/v1/threads/${thread.id}/runs/${run.id}`, { headers });
     if(!poll.ok) throw new Error(`Run poll error ${poll.status}: ${await poll.text()}`);
     const pr = await poll.json();
     status = pr.status;
-    if(++tries > 40) break; // ~60s
+    if(++tries > 40) break;
   }
 
-  // 5) Citim ultimul mesaj al asistentului
+  // 5) Ultimul mesaj al asistentului
   const mRes = await fetch(`https://api.openai.com/v1/threads/${thread.id}/messages?limit=5&order=desc`, { headers });
-  if(!mRes.ok){
-    throw new Error(`Messages list error ${mRes.status}: ${await mRes.text()}`);
-  }
+  if(!mRes.ok) throw new Error(`Messages list error ${mRes.status}: ${await mRes.text()}`);
   const mjs = await mRes.json();
   const assistantMsg = (mjs.data||[]).find(x=>x.role==="assistant");
   let text = "";
   if(assistantMsg && assistantMsg.content){
     for(const part of assistantMsg.content){
-      if(part.type==="text" && part.text && part.text.value){
-        text += part.text.value + "\n";
-      }
+      if(part.type==="text" && part.text && part.text.value) text += part.text.value + "\n";
     }
   }
   text = cleanup(text);
-
-  // Dacă nu a produs nimic, dăm refuzul fix.
-  if(!text || !text.trim()){
-    return refusal(userLang);
-  }
+  if(!text.trim()) return refusal(userLang);
   return text.trim();
 }
 
