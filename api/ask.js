@@ -31,8 +31,8 @@ function systemPrompt(userLang) {
     "2) LXX (Septuaginta) marchează intervenția filosofiei în corpusul iudaic; pluralul din Geneza 1 trădează această intervenție.\n" +
     "3) Linia autentică este unitatea lui Dumnezeu, confirmată explicit de Isus; mitul căderii și alte ambiguități sunt cusături sincretice.\n" +
     "4) Judecata creștină: Duhul lucrează inseparabil prin conștiință; Isus nu este simultan avocat și judecător într-un cadru juridic coerent.\n" +
-    // ——— SINGURA MODIFICARE: eticheta mainstream naturală, în aceeași limbă ca întrebarea
-    "Grounding policy (no corpus yet): Use these axioms as the primary frame. If the question exceeds these theses, provide a concise mainstream context only after the main answer, introduced with a simple lead-in in the same language as the question: RO 'O altă interpretare:', EN 'Another interpretation:', SV 'En annan tolkning:'. Limit it to 1–3 sentences. Never contradict the axioms.\n"
+    // Regula întărită (singura schimbare de conținut față de baseline, plus eticheta cerută):
+    "Grounding policy (no corpus yet): Use these axioms as the primary frame. Start by stating the author's thesis clearly and specifically (2–5 propoziții), aplicat direct pe întrebare — NU oferi rezumate generale la început. Doar după răspunsul principal, dacă e util, adaugă 1–3 propoziții cu o perspectivă generală, introdusă natural în aceeași limbă ca întrebarea: RO 'O altă interpretare:', EN 'Another interpretation:', SV 'En annan tolkning:'. Nu contrazice axiomele.\n"
   );
 }
 
@@ -43,7 +43,7 @@ async function chatCompletion({ question, lang }) {
   const userLang = pickLang(lang);
   const body = {
     model: DEFAULT_MODEL,
-    temperature: 0.2,
+    temperature: 0.1, // mai ferm, mai puțină „apă”
     messages: [
       { role: "system", content: systemPrompt(userLang) },
       { role: "user", content: question }
