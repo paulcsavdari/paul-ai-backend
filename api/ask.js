@@ -1,8 +1,9 @@
-// api/ask.js — UNIFICAT (File Search când există VECTOR_STORE_ID; altfel fallback pe "busola")
-// Necesită: OPENAI_API_KEY (și VECTOR_STORE_ID în Vercel pentru File Search). Opțional: OPENAI_MODEL.
+// api/ask.js — răspunsuri prioritare din corpus (File Search). Fără axiome.
+// Dacă există VECTOR_STORE_ID -> folosește File Search (din textele tale).
+// Dacă nu -> fallback simplu, fără „teologia altora”. Endpointul rămâne /api/ask.
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const VECTOR_STORE_ID = process.env.VECTOR_STORE_ID || ""; // dacă e gol, folosește fallback
+const VECTOR_STORE_ID = process.env.VECTOR_STORE_ID || "";
 
 function cors(res){
   res.setHeader("Access-Control-Allow-Origin","*");
@@ -14,28 +15,36 @@ function pickLang(lang){
   const L = lang.toLowerCase();
   return ["ro","en","sv","de","fr","es","pt","it"].includes(L) ? L : "auto";
 }
-function systemPrompt(userLang){
+
+function systemPrompt(userLang, hasFiles){
   const langLine = userLang==="auto"
     ? "Always answer in the language of the user's last message."
     : `Always answer in ${userLang}.`;
-
-  return (
-    `${langLine}\n` +
+  const voice =
     "You are 'Theological Assistant' for paulcsavdari.info.\n" +
-    "Voice & style: sober, theological, clear, direct, argumentative. No hedging.\n" +
-    "Do not show citations, sources, or file names. Speak as a coherent vision.\n" +
-    "Core axioms to prioritize in reasoning and answers:\n" +
-    "1) 'Cornul cel mic' (Daniel 8) = Filosofia care cucerește și rescrie religiile prin sincretism și universalizare.\n" +
-    "2) LXX (Septuaginta) marchează intervenția filosofiei în corpusul iudaic; pluralul din Geneza 1 trădează această intervenție.\n" +
-    "3) Linia autentică este unitatea lui Dumnezeu, confirmată explicit de Isus; mitul căderii și alte ambiguități sunt cusături sincretice.\n" +
-    "4) Judecata: Duhul lucrează inseparabil prin conștiință; Isus nu este simultan avocat și judecător într-un cadru juridic coerent.\n" +
-    "5) Apocalipsa este datată de autor în pre-70, cu scrierea în 63 d.Hr.; această poziție are prioritate față de datarea mainstream (~95 d.Hr.).\n" +
-    "Grounding policy: When file store context is available, base the answer primarily on it (paraphrase; do NOT list or quote files). " +
-    "Start with the author's thesis applied to the question (2–5 propoziții). Only after the main answer, if useful, append 1–3 sentences with a general view, introduced naturally in the same language: RO 'O altă interpretare:', EN 'Another interpretation:', SV 'En annan tolkning:'. Never contradict the axioms.\n"
-  );
+    "Voice & style: sober, theological, clear, direct. No hedging. No academic fluff.\n" +
+    "Do NOT show citations, file names or links publicly. Paraphrase cleanly.\n";
+
+  if (hasFiles) {
+    return (
+      `${langLine}\n${voice}` +
+      "Base your answer PRIMARILY on the context retrieved via file_search (author's corpus). " +
+      "If the retrieved context gives a clear position, answer from it directly, applied to the user's question. " +
+      "Only if the retrieved context is insufficient, you MAY append at the end a very short general note (max 1–3 sentences), " +
+      "introduced naturally in the same language: RO 'O altă interpretare:', EN 'Another interpretation:', SV 'En annan tolkning:'.\n" +
+      "Never invent sources. If you really lack context, keep the answer concise and say that more corpus is needed on this exact topic."
+    );
+  } else {
+    return (
+      `${langLine}\n${voice}` +
+      "The author's corpus is not available here. Give a concise, neutral answer to the user's question. " +
+      "Do NOT pretend to represent the author's specific positions without corpus. " +
+      "If useful, you MAY add at the end 1–3 short sentences with a general view, introduced as: RO 'O altă interpretare:', EN 'Another interpretation:', SV 'En annan tolkning:'."
+    );
+  }
 }
 
-// — A) File Search (Responses API) — folosit când avem VECTOR_STORE_ID
+// — A) File Search (Responses API)
 async function askWithFileSearch({ question, lang }){
   const apiKey = process.env.OPENAI_API_KEY;
   if(!apiKey) throw new Error("Missing OPENAI_API_KEY");
@@ -44,7 +53,7 @@ async function askWithFileSearch({ question, lang }){
   const body = {
     model: DEFAULT_MODEL,
     input: [
-      { role: "system", content: systemPrompt(userLang) },
+      { role: "system", content: systemPrompt(userLang, true) },
       { role: "user", content: question }
     ],
     tools: [{ type: "file_search" }],
@@ -65,7 +74,7 @@ async function askWithFileSearch({ question, lang }){
   return (data.output_text || "").trim();
 }
 
-// — B) Fallback fără File Search (Chat Completions) — când nu avem VECTOR_STORE_ID sau dacă A) eșuează
+// — B) Fallback fără File Search (Chat Completions)
 async function askWithoutFiles({ question, lang }){
   const apiKey = process.env.OPENAI_API_KEY;
   if(!apiKey) throw new Error("Missing OPENAI_API_KEY");
@@ -73,9 +82,9 @@ async function askWithoutFiles({ question, lang }){
   const userLang = pickLang(lang);
   const body = {
     model: DEFAULT_MODEL,
-    temperature: 0.1, // ferm, puține generalități
+    temperature: 0.1,
     messages: [
-      { role: "system", content: systemPrompt(userLang) },
+      { role: "system", content: systemPrompt(userLang, false) },
       { role: "user", content: question }
     ],
   };
@@ -100,15 +109,14 @@ module.exports = async (req, res) => {
   if(req.method!=="POST"){ res.status(405).json({ error: "Method Not Allowed" }); return; }
 
   try{
-    let raw = ""; await new Promise(r=>{ req.on("data", c=>raw+=c); req.on("end", r); });
-    let body = {}; try { body = JSON.parse(raw || "{}"); } catch(_){}
+    let raw=""; await new Promise(r=>{ req.on("data", c=>raw+=c); req.on("end", r); });
+    let body={}; try{ body=JSON.parse(raw||"{}"); } catch(_){}
     const question = String(body.question || "").trim();
     const lang = body.lang;
     if(!question){ res.status(400).json({ error: "Missing 'question'" }); return; }
 
     let answer;
     if (VECTOR_STORE_ID) {
-      // încearcă din textele tale; dacă e vreo problemă, cade pe varianta veche
       try {
         answer = await askWithFileSearch({ question, lang });
       } catch (e) {
