@@ -1,8 +1,10 @@
-// api/corpus_v3.js — EXCLUSIV din corpus, Assistants API v2 + File Search, cu REFERINȚE CLICKABILE
-// • Răspuns scurt (5–8 fraze), fără mainstream, fără RO/EN/SV.
-// • Sursele sunt construite programatic din citațiile Assistants (file_citation) -> link-uri utile.
-// ENV (Production): OPENAI_API_KEY, VECTOR_STORE_ID (vs_...)
-// Model: gpt-4o (stabil pentru file_search în Assistants v2)
+// api/corpus_v3.js — EXCLUSIV din corpus, Assistants API v2 + File Search
+// • Răspuns scurt (5–8 fraze).
+// • Sursele se iau DOAR din linia "URL:" din fișierul citat (file_citation).
+// • Corecții de siguranță: "paulcsavdari/info" -> "paulcsavdari.info", "/daniel/apocalipsa/ro/" -> "/daniel-apocalipsa-ro/"
+// • Dacă nu există URL în fișierul citat, sursa e omisă (nu ghicim).
+// ENV: OPENAI_API_KEY, VECTOR_STORE_ID (vs_...)
+// Model: gpt-4o
 
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 const VECTOR_STORE_ID = process.env.VECTOR_STORE_ID || "";
@@ -12,45 +14,19 @@ function cors(res){
   res.setHeader("Access-Control-Allow-Methods","POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers","Content-Type");
 }
-
-function pickLang(v){
-  if(!v || typeof v!=="string") return "auto";
-  const l=v.toLowerCase();
-  return ["ro","en","sv","de","fr","es","pt","it"].includes(l)?l:"auto";
-}
-function refusal(lang){
-  if(lang==="en") return "No relevant context in the author's corpus for this question.";
-  if(lang==="sv") return "Inget relevant underlag i författarens korpus för den här frågan.";
-  return "Nu există context relevant în corpusul autorului pentru această întrebare.";
-}
-function cleanupText(s){
-  return String(s||"")
-    .replace(/【[^】]*】/g, "")   // artefacte tip 
-    .replace(/[“”‘’"]/g, "")    // ghilimele tipografice
-    .replace(/\(\s*mainstream\s*\)\s*:?/gi,"")
-    .trim();
-}
-function humanTitleFromURL(url){
-  try{
-    const u = new URL(url);
-    const seg = u.pathname.split("/").filter(Boolean);
-    const last = seg[seg.length-1] || u.hostname;
-    return decodeURIComponent(last).replace(/[-_]+/g, " ").replace(/\b\w/g, c=>c.toUpperCase());
-  }catch(_){ return url; }
-}
-function filenameToURL(name){
-  // ex: https_paulcsavdari_info_daniel_apocalipsa_ro_exilul_insula_patmos.txt
-  if(!name) return null;
-  let n = name.replace(/\.txt$/i,"").replace(/\.md$/i,"").replace(/\.html?$/i,"");
-  if(n.startsWith("https_")) n = "https://" + n.slice(6).replace(/_/g,"/");
-  else if(n.startsWith("http_")) n = "http://" + n.slice(5).replace(/_/g,"/");
-  else return null;
-  return n;
+function pickLang(v){ if(!v||typeof v!=="string") return "auto"; const l=v.toLowerCase(); return ["ro","en","sv","de","fr","es","pt","it"].includes(l)?l:"auto"; }
+function refusal(lang){ if(lang==="en") return "No relevant context in the author's corpus for this question."; if(lang==="sv") return "Inget relevant underlag i författarens korpus för den här frågan."; return "Nu există context relevant în corpusul autorului pentru această întrebare."; }
+function cleanupText(s){ return String(s||"").replace(/【[^】]*】/g,"").replace(/[“”‘’"]/g,"").replace(/\(\s*mainstream\s*\)\s*:?/gi,"").trim(); }
+function humanTitleFromURL(url){ try{ const u=new URL(url); const seg=u.pathname.split("/").filter(Boolean); const last=seg[seg.length-1]||u.hostname; const t=decodeURIComponent(last).replace(/[-_]+/g," ").trim(); return t? t.charAt(0).toUpperCase()+t.slice(1) : url; }catch(_){ return url; } }
+function fixURL(u){
+  if(!u) return null;
+  let url = u.trim();
+  url = url.replace("paulcsavdari/info/","paulcsavdari.info/");
+  url = url.replace("/daniel/apocalipsa/ro/","/daniel-apocalipsa-ro/");
+  return url;
 }
 function buildInstructions(userLang){
-  const langLine = userLang==="auto"
-    ? "Always answer in the language of the user's last message."
-    : `Always answer in ${userLang}.`;
+  const langLine = userLang==="auto" ? "Always answer in the language of the user's last message." : `Always answer in ${userLang}.`;
   return (
     `${langLine}\n` +
     "Answer ONLY using the retrieved context from file_search (the author's corpus). " +
@@ -105,7 +81,7 @@ async function askCorpus({ question, lang }){
   if(!rRes.ok) throw new Error(`Run create error ${rRes.status}: ${await rRes.text()}`);
   const run = await rRes.json();
 
-  // 4) Poll până se termină (max ~60s)
+  // 4) Poll
   let status = run.status, tries = 0;
   while(status==="queued" || status==="in_progress" || status==="requires_action"){
     await new Promise(r=>setTimeout(r,1500));
@@ -116,7 +92,7 @@ async function askCorpus({ question, lang }){
     if(++tries > 40) break;
   }
 
-  // 5) Ultimul mesaj + strângem citațiile (file_citation) pentru surse
+  // 5) Ultimul mesaj + citatii (file_citation) -> extragem DOAR URL din conținutul fișierului
   const mRes = await fetch(`https://api.openai.com/v1/threads/${thread.id}/messages?limit=10&order=desc`, { headers });
   if(!mRes.ok) throw new Error(`Messages list error ${mRes.status}: ${await mRes.text()}`);
   const mjs = await mRes.json();
@@ -141,29 +117,32 @@ async function askCorpus({ question, lang }){
   bodyText = cleanupText(bodyText).trim();
   if(!bodyText) return refusal(userLang);
 
-  // 6) Transformăm citațiile în link-uri
-  const headersFiles = {
-    "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-    "OpenAI-Beta": "assistants=v2"
-  };
+  // Construim sursele NUMAI dacă găsim 'URL:' în conținutul fișierului
+  const apiHeaders = { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "OpenAI-Beta": "assistants=v2" };
   const sources = [];
-  for(const fid of Array.from(citedFileIds).slice(0,3)){
+  for(const fid of Array.from(citedFileIds)){
     try{
-      const fRes = await fetch(`https://api.openai.com/v1/files/${fid}`, { headers: headersFiles });
-      if(!fRes.ok) continue;
-      const f = await fRes.json();
-      const meta = f.metadata || {};
-      const url = meta.url || meta.source_url || filenameToURL(f.filename);
+      const cRes = await fetch(`https://api.openai.com/v1/files/${fid}/content`, { headers: apiHeaders });
+      if(!cRes.ok) continue;
+      const txt = await cRes.text();
+      const head = txt.slice(0, 10000);
+      const mUrl = head.match(/^\s*URL\s*:\s*(\S+)/mi);
+      const mTitle = head.match(/^\s*TITLE\s*:\s*(.+)$/mi);
+      if(!mUrl) continue; // fără URL: -> ignoră fișierul (nu ghicim)
+      let url = fixURL(mUrl[1]);
       if(!url) continue;
-      const title = meta.title || humanTitleFromURL(url);
+      const title = (mTitle && mTitle[1].trim()) || humanTitleFromURL(url);
       sources.push({ title, url });
+      if(sources.length >= 3) break;
     }catch(_){}
   }
 
-  // 7) Combinăm răspuns + „Surse” (HTML) doar dacă avem linkuri
   let out = bodyText;
   if(sources.length){
-    out += "\n\nSurse:\n<ul>\n" + sources.map(s => 
+    // elimină duplicate după URL
+    const uniq=[]; const seen=new Set();
+    for(const s of sources){ if(!seen.has(s.url)){ seen.add(s.url); uniq.push(s);} }
+    out += "\n\nSurse:\n<ul>\n" + uniq.map(s =>
       `<li><a href="${s.url}" target="_blank" rel="noopener">${s.title}</a></li>`
     ).join("\n") + "\n</ul>";
   }
